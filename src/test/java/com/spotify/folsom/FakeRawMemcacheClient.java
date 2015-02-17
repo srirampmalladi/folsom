@@ -30,7 +30,7 @@ import com.spotify.folsom.client.ascii.TouchRequest;
 import java.util.List;
 import java.util.Map;
 
-public class FakeRawMemcacheClient implements RawMemcacheClient {
+public class FakeRawMemcacheClient extends AbstractRawMemcacheClient {
 
   private boolean connected = true;
   private final Map<String, byte[]> map = Maps.newHashMap();
@@ -95,9 +95,9 @@ public class FakeRawMemcacheClient implements RawMemcacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> shutdown() {
+  public void shutdown() {
     connected = false;
-    return Futures.immediateFuture(null);
+    notifyConnectionChange();
   }
 
   @Override

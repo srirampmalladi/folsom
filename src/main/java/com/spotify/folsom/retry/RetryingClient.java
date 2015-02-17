@@ -18,6 +18,8 @@ package com.spotify.folsom.retry;
 import com.google.common.util.concurrent.FutureFallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.spotify.folsom.AbstractRawMemcacheClient;
+import com.spotify.folsom.ConnectionChangeListener;
 import com.spotify.folsom.MemcacheClosedException;
 import com.spotify.folsom.RawMemcacheClient;
 import com.spotify.folsom.client.Request;
@@ -32,12 +34,13 @@ import com.spotify.folsom.client.Request;
  * The retrying is intentionally strict about when to retry and how many times to retries in order
  * to minimize risk of causing more problems then it would solve.
  */
-public class RetryingClient implements RawMemcacheClient {
+public class RetryingClient extends AbstractRawMemcacheClient implements ConnectionChangeListener {
 
   private final RawMemcacheClient delegate;
 
   public RetryingClient(final RawMemcacheClient delegate) {
     this.delegate = delegate;
+    delegate.registerForConnectionChanges(this);
   }
 
   @Override
@@ -56,8 +59,8 @@ public class RetryingClient implements RawMemcacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> shutdown() {
-    return delegate.shutdown();
+  public void shutdown() {
+    delegate.shutdown();
   }
 
   @Override
@@ -78,5 +81,10 @@ public class RetryingClient implements RawMemcacheClient {
   @Override
   public String toString() {
     return "Retrying(" + delegate + ")";
+  }
+
+  @Override
+  public void connectionChanged(RawMemcacheClient client) {
+    notifyConnectionChange();
   }
 }

@@ -20,7 +20,9 @@ import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import com.spotify.folsom.AbstractRawMemcacheClient;
 import com.spotify.folsom.BackoffFunction;
+import com.spotify.folsom.ConnectionChangeListener;
 import com.spotify.folsom.RawMemcacheClient;
 import com.spotify.folsom.client.DefaultRawMemcacheClient;
 import com.spotify.folsom.client.NotConnectedClient;
@@ -31,9 +33,10 @@ import org.slf4j.LoggerFactory;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
-public class ReconnectingClient implements RawMemcacheClient {
+public class ReconnectingClient extends AbstractRawMemcacheClient {
 
   private static final ScheduledExecutorService SCHEDULED_EXECUTOR_SERVICE =
           Executors.newScheduledThreadPool(1, new ThreadFactoryBuilder()
@@ -47,6 +50,8 @@ public class ReconnectingClient implements RawMemcacheClient {
   private final ScheduledExecutorService scheduledExecutorService;
   private final Connector connector;
   private final HostAndPort address;
+
+  private final Semaphore retrySemaphore = new Semaphore(1);
 
   private volatile RawMemcacheClient client = NotConnectedClient.INSTANCE;
   private volatile int reconnectCount = 0;
@@ -89,9 +94,9 @@ public class ReconnectingClient implements RawMemcacheClient {
   }
 
   @Override
-  public ListenableFuture<Void> shutdown() {
+  public void shutdown() {
     stayConnected = false;
-    return client.shutdown();
+    client.shutdown();
   }
 
   @Override
@@ -110,37 +115,44 @@ public class ReconnectingClient implements RawMemcacheClient {
   }
 
   private void retry() {
+    if (!retrySemaphore.tryAcquire()) {
+      return;
+    }
     try {
       final ListenableFuture<RawMemcacheClient> future = connector.connect();
       Futures.addCallback(future, new FutureCallback<RawMemcacheClient>() {
         @Override
         public void onSuccess(final RawMemcacheClient result) {
+          retrySemaphore.release();
           log.info("Successfully connected to {}", address);
           reconnectCount = 0;
           client = result;
-          final ListenableFuture<Void> closeFuture =
-                  ((DefaultRawMemcacheClient) result).getCloseFuture();
-          Futures.addCallback(closeFuture, new FutureCallback<Void>() {
+          result.registerForConnectionChanges(new ConnectionChangeListener() {
             @Override
-            public void onSuccess(final Void ignore) {
-              log.info("Lost connection to {}", address);
-              retry();
-            }
-
-            @Override
-            public void onFailure(final Throwable t) {
-              retry();
+            public void connectionChanged(RawMemcacheClient ignored) {
+              check();
             }
           });
+          check();
+          notifyConnectionChange();
         }
 
         @Override
         public void onFailure(final Throwable t) {
+          retrySemaphore.release();
           ReconnectingClient.this.onFailure();
         }
       });
     } catch (final Exception e) {
+      retrySemaphore.release();
       ReconnectingClient.this.onFailure();
+    }
+  }
+
+  private void check() {
+    if (!client.isConnected()) {
+      retry();
+      notifyConnectionChange();
     }
   }
 
